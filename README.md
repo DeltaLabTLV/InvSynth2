@@ -1,4 +1,4 @@
-# InvSynth3: Drivers of Success in Synthesizer Inversion
+# InvSynth2: Drivers of Success in Synthesizer Inversion
 
 PyTorch Lightning implementation of the paper *Drivers of Success in Synthesizer Inversion: An Ablation of Architecture, Pre-Training, and Loss*.
 
@@ -24,7 +24,7 @@ The system has **three sequential stages**:
 ## Repository Layout
 
 ```
-invsynth3/
+invsynth2/
 ├── configs/                     # YAML configs for every stage and dataset
 ├── environment.yml              # conda env (Windows-friendly, CUDA 12.1)
 ├── scripts/                     # entry points
@@ -35,7 +35,7 @@ invsynth3/
 │   ├── evaluate.py              # All metrics on test set
 │   ├── run_mos_test.py          # Generate stimuli for MOS listening test
 │   └── compute_mos.py           # Aggregate MOS results from CSV
-└── src/invsynth3/
+└── src/invsynth2/
     ├── data/                    # Dataset classes + DataModule
     ├── models/                  # Encoders, PEN, Proxy, Decoder
     ├── losses/                  # IMW, NT-Xent, MAE, log-spec, parameter losses
@@ -80,7 +80,7 @@ conda config --set solver libmamba
 
 # 3. From the project root, create the lightweight base env:
 conda env create -f environment.yml
-conda activate invsynth3
+conda activate invsynth2
 
 # 4. Install the heavy stack via pip (PyTorch + Lightning).
 #    For GPU (CUDA 12.1):
@@ -102,8 +102,8 @@ conda install -n base -c conda-forge mamba
 mamba env create -f environment.yml
 
 # Option B: bypass conda for everything except Python itself
-conda create -n invsynth3 python=3.10
-conda activate invsynth3
+conda create -n invsynth2 python=3.10
+conda activate invsynth2
 pip install --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements-pip.txt
 pip install numpy scipy pandas matplotlib librosa soundfile tqdm pyyaml
 pip install -e .
