@@ -1,0 +1,23 @@
+stage: pretrain_unet
+defaults_from: default.yaml
+
+trainer:
+  max_epochs: 1000
+  precision: "16-mixed"
+
+module:
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-6
+  mask_center_ratio: 0.065
+  mask_region_size: 3
+
+callbacks:
+  early_stop:
+    monitor: "val/mae_recon"
+    mode: "min"
+    patience: 50
+  ckpt:
+    monitor: "val/mae_recon"
+    mode: "min"
+    save_top_k: 1
+    save_last: true

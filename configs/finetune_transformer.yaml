@@ -1,0 +1,33 @@
+stage: finetune_transformer
+defaults_from: default.yaml
+
+trainer:
+  max_epochs: 200
+  precision: "16-mixed"
+
+module:
+  encoder_kind: "transformer"
+  loss_mode: "imw"                  # imw / log_spec / spec_only
+  beta: 0.7
+  alpha1: 1.0
+  alpha2: 1.0
+  epsilon: 1.0e-7
+  lambda_param: 1.0
+  lambda_rec: 1.0
+  lambda_reg: 1.0
+  lambda_cls: 1.0
+  learning_rate_transformer: 5.0e-5
+  learning_rate_unet: 1.0e-4
+  weight_decay: 1.0e-6
+  max_grad_norm: 1.0
+
+callbacks:
+  early_stop:
+    monitor: "val/rec_spec"
+    mode: "min"
+    patience: 30
+  ckpt:
+    monitor: "val/rec_spec"
+    mode: "min"
+    save_top_k: 1
+    save_last: true

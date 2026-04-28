@@ -1,0 +1,179 @@
+Metadata-Version: 2.4
+Name: invsynth2
+Version: 1.0.0
+Summary: Drivers of Success in Synthesizer Inversion (ISMIR 2026)
+Author: Anonymous
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+
+# InvSynth3: Drivers of Success in Synthesizer Inversion
+
+PyTorch Lightning implementation of the paper *Drivers of Success in Synthesizer Inversion: An Ablation of Architecture, Pre-Training, and Loss*.
+
+## Pipeline Overview
+
+The system has **three sequential stages**:
+
+1. **Self-supervised pre-training** of the encoder
+   - Transformer encoder → contrastive (NT-Xent) on log-magnitude STFT
+   - U-Net encoder → MAE-style masked reconstruction (the U-Net decoder is used here, then discarded)
+
+2. **Proxy training** (one-time, frozen for the rest)
+   - Trains the IS2-style differentiable synthesizer proxy `P` that maps θ → spectrogram
+
+3. **Fine-tuning (downstream inversion)**
+   - The pre-trained encoder + Parameter Estimation Network (PEN) is trained with `L_rec + L_reg + L_cls`
+   - The proxy `P` is frozen; gradients pass through it to update the encoder + PEN
+
+4. **Inference-Time Fine-tuning (ITF)** *(optional)*
+   - At inference, the predicted θ̂ is refined by minimizing the spectral reconstruction loss through the frozen proxy
+   - Encoder and proxy are frozen; only θ̂ is updated
+
+## Repository Layout
+
+```
+invsynth2/
+├── configs/                     # YAML configs for every stage and dataset
+├── environment.yml              # conda env (Windows-friendly, CUDA 12.1)
+├── scripts/                     # entry points
+│   ├── pretrain.py              # Stage 1 — SSL pre-training
+│   ├── train_proxy.py           # Stage 2 — Proxy training
+│   ├── finetune.py              # Stage 3 — Downstream inversion
+│   ├── itf_inference.py         # Stage 4 — ITF refinement at inference
+│   ├── evaluate.py              # All metrics on test set
+│   ├── run_mos_test.py          # Generate stimuli for MOS listening test
+│   └── compute_mos.py           # Aggregate MOS results from CSV
+└── src/invsynth2/
+    ├── data/                    # Dataset classes + DataModule
+    ├── models/                  # Encoders, PEN, Proxy, Decoder
+    ├── losses/                  # IMW, NT-Xent, MAE, log-spec, parameter losses
+    ├── training/                # LightningModules for each stage
+    ├── evaluation/              # Spec, SC, Melspec, MFCC, ACC metrics
+    └── utils/                   # STFT, parameter handling, masking
+```
+
+## Data Format
+
+Each dataset folder must contain:
+
+```
+<dataset_name>/                  # e.g. fm/, dx7/, talnoise/
+├── data/
+│   ├── 1.wav
+│   ├── 2.wav
+│   └── ...
+└── labels/
+    ├── 1.npy                   # 1D float array of synthesizer parameters
+    ├── 2.npy
+    └── ...
+```
+
+WAVs and labels are matched by filename stem. Files are loaded as 16 kHz mono and converted to log-magnitude STFT (Hann window 1024, hop 256) with global normalization.
+
+The dataset loader uses an 80/10/10 train/val/test split, seeded for reproducibility.
+
+## Setup (Windows)
+
+```bash
+# 1. Install Miniconda from https://docs.conda.io/en/latest/miniconda.html
+# 2. From the project root:
+conda env create -f environment.yml
+conda activate invsynth2
+
+# 3. Install the package itself in editable mode:
+pip install -e .
+```
+
+## Quick Start
+
+### Stage 1: Pre-train an encoder
+
+```bash
+# Transformer (contrastive)
+python scripts/pretrain.py --config configs/pretrain_transformer.yaml --dataset fm
+
+# U-Net (MAE)
+python scripts/pretrain.py --config configs/pretrain_unet.yaml --dataset fm
+```
+
+### Stage 2: Train the proxy
+
+```bash
+python scripts/train_proxy.py --config configs/proxy.yaml --dataset fm
+```
+
+### Stage 3: Fine-tune for inversion
+
+```bash
+python scripts/finetune.py \
+  --config configs/finetune_transformer.yaml \
+  --dataset fm \
+  --encoder-ckpt runs/pretrain_transformer_fm/last.ckpt \
+  --proxy-ckpt runs/proxy_fm/last.ckpt \
+  --loss imw                          # or: log_spec, spec_only
+  --skip-pretrain                     # for w/o-SSL ablation row
+```
+
+### Stage 4: ITF at inference
+
+```bash
+python scripts/itf_inference.py \
+  --finetuned-ckpt runs/finetune_transformer_fm/best.ckpt \
+  --dataset fm \
+  --steps 100
+```
+
+### Evaluation (all metrics)
+
+```bash
+python scripts/evaluate.py \
+  --finetuned-ckpt runs/finetune_transformer_fm/best.ckpt \
+  --dataset fm \
+  --apply-itf
+```
+
+### TensorBoard
+
+```bash
+tensorboard --logdir runs/
+```
+
+### MOS Listening Test
+
+```bash
+# 1. Generate audio stimuli (target + reconstructions per system)
+python scripts/run_mos_test.py \
+  --output-dir mos_stimuli/ \
+  --datasets fm dx7 talnoise \
+  --systems is2 transformer unet \
+  --n-stimuli 3
+
+# 2. Distribute to listeners; collect ratings into a CSV with columns:
+#    listener_id, dataset, system, stimulus_id, rating
+# 3. Aggregate
+python scripts/compute_mos.py \
+  --ratings ratings.csv \
+  --output mos_results.json
+```
+
+## Reproducing Paper Tables
+
+For each of `fm`, `dx7`, `talnoise`, run all 8 ablation configurations:
+
+| Config | Encoder | SSL | Loss |
+|---|---|---|---|
+| Trans (full)  | Transformer | yes | IMW   |
+| Trans w/o IMW | Transformer | yes | spec  |
+| Trans w/ log  | Transformer | yes | log   |
+| Trans w/o SSL | Transformer | no  | IMW   |
+| U-Net (full)  | U-Net       | yes | IMW   |
+| U-Net w/o IMW | U-Net       | yes | spec  |
+| U-Net w/ log  | U-Net       | yes | log   |
+| U-Net w/o SSL | U-Net       | no  | IMW   |
+
+Each run uses 5 seeds. The `scripts/run_full_ablation.py` script orchestrates this.
+
+## License
+
+MIT.

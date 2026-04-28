@@ -1,0 +1,24 @@
+stage: pretrain_transformer
+defaults_from: default.yaml
+
+trainer:
+  max_epochs: 1000
+  precision: "16-mixed"
+
+module:
+  learning_rate: 5.0e-5
+  weight_decay: 1.0e-6
+  mask_ratio: 0.45
+  n_negatives: 50
+  temperature: 0.1
+
+callbacks:
+  early_stop:
+    monitor: "val/nt_xent"
+    mode: "min"
+    patience: 50
+  ckpt:
+    monitor: "val/nt_xent"
+    mode: "min"
+    save_top_k: 1
+    save_last: true

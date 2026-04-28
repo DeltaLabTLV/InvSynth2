@@ -1,0 +1,23 @@
+stage: proxy_train
+defaults_from: default.yaml
+
+trainer:
+  max_epochs: 200
+  precision: "16-mixed"
+
+module:
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-6
+  out_freq: 513
+  out_time: 64
+
+callbacks:
+  early_stop:
+    monitor: "val/proxy_mse"
+    mode: "min"
+    patience: 30
+  ckpt:
+    monitor: "val/proxy_mse"
+    mode: "min"
+    save_top_k: 1
+    save_last: true

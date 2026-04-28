@@ -1,0 +1,19 @@
+# Install AFTER `conda env create -f environment.yml && conda activate invsynth2`
+# Run:
+#   pip install --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements-pip.txt
+# Or for CPU-only:
+#   pip install -r requirements-pip.txt
+
+torch==2.3.1
+torchaudio==2.3.1
+
+lightning==2.3.3
+tensorboard==2.16.2
+torchmetrics==1.4.0
+
+einops==0.8.0
+hydra-core==1.3.2
+omegaconf==2.3.0
+rich==13.7.1
+scikit-learn==1.5.0
+pytest==8.2.2

@@ -1,0 +1,27 @@
+# Common dataset/STFT/training defaults shared across all stages.
+# Stage-specific configs override fields as needed.
+
+dataset:
+  root: "./data"
+  target_seconds: 1.0
+  sample_rate: 16000
+  batch_size: 32
+  num_workers: 4
+  train_frac: 0.8
+  val_frac: 0.1
+  seed: 42
+
+stft:
+  sample_rate: 16000
+  n_fft: 1024
+  hop_length: 256
+  win_length: 1024
+  eps: 1.0e-7
+
+trainer:
+  accelerator: "auto"            # CUDA on Windows-with-GPU, CPU otherwise
+  devices: 1
+  precision: "16-mixed"          # AMP for speed; turn off if numerics are an issue
+  log_every_n_steps: 10
+  gradient_clip_val: 1.0
+  deterministic: false           # set true only if you also fix all worker seeds
