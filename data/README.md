@@ -122,6 +122,7 @@ Target audio x(t)
 1. **Controlled 3-way ablation** — encoder architecture, SSL pre-training, and loss function independently evaluated at a fixed 3.5M parameter budget
 2. **IMW Loss** — inverse-magnitude weighted spectral loss that explicitly prioritises high-frequency, low-magnitude bins via target-only weighting `1/(|X_tf| + ε)`
 
+
 ---
 
 ## Key Results
