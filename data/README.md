@@ -172,3 +172,16 @@ Target audio x(t)
 ---
 
 *This repository will be fully de-anonymised upon paper acceptance.*
+
+
+## About these samples
+
+These are the 20 qualitative samples published by the InverSynth2
+authors at https://github.com/inversynth/InverSynth2/tree/main/results.
+
+We add audio renderings for our UNet and Transformer models on the
+same inputs for direct visual and aural comparison. Predictions for
+all models (including ours) are available as CSV files in this repo.
+
+Note: IS2 predictions match GT exactly on these samples since they
+were selected by the original authors as their best results.
