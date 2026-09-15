@@ -1,6 +1,5 @@
 # Disentangling Representation Learning and Loss Design in Synthesizer Inversion
 
-> **ISMIR 2026 Submission** · Anonymous Authors
 
 ---
 
