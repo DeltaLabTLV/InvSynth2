@@ -1,203 +1,175 @@
-# InvSynth2: Drivers of Success in Synthesizer Inversion
+# Masked Reconstruction Pretraining for Proxy-Based Synthesizer Inversion
 
-PyTorch Lightning implementation of the paper *Drivers of Success in Synthesizer Inversion: An Ablation of Architecture, Pre-Training, and Loss*.
+Candidate reproducibility workspace for the ICASSP 2027 manuscript by Moshe
+Laufer, Oren Barkan, and Noam Koenigstein. It must pass the artifact audit and
+be checked against the authors' retained run records before being tagged as an
+exact reproduction release.
 
-## Pipeline Overview
+Repository: <https://github.com/DeltaLabTLV/InvSynth2>
 
-The system has **three sequential stages**:
+## Scope of this release
 
-1. **Self-supervised pre-training** of the encoder
-   - Transformer encoder → contrastive (NT-Xent) on log-magnitude STFT
-   - U-Net encoder → MAE-style masked reconstruction (the U-Net decoder is used here, then discarded)
+The ICASSP paper studies one 3.61M-parameter U-Net encoder under four complete
+training configurations:
 
-2. **Proxy training** (one-time, frozen for the rest)
-   - Trains the IS2-style differentiable synthesizer proxy `P` that maps θ → spectrogram
+| Configuration | Masked updates | Supervised updates | Reconstruction objective |
+|---|---:|---:|---|
+| Masked + IMW | 50,000 | 10,000 | `0.7 * spec + 0.3 * imw` |
+| Masked + spectral-only | 50,000 | 10,000 | `spec` |
+| Masked + log mixture | 50,000 | 10,000 | `0.7 * spec + 0.3 * log` |
+| Supervised + IMW | 0 | 60,000 | `0.7 * spec + 0.3 * imw` |
 
-3. **Fine-tuning (downstream inversion)**
-   - The pre-trained encoder + Parameter Estimation Network (PEN) is trained with `L_rec + L_reg + L_cls`
-   - The proxy `P` is frozen; gradients pass through it to update the encoder + PEN
+Every row receives 60,000 encoder updates. This matches update counts, not
+FLOPs or wall-clock time: masked pretraining also updates a decoder that is
+discarded before supervision.
 
-4. **Inference-Time Fine-tuning (ITF)** *(optional)*
-   - At inference, the predicted θ̂ is refined by minimizing the spectral reconstruction loss through the frozen proxy
-   - Encoder and proxy are frozen; only θ̂ is updated
+The earlier Transformer implementation is recoverable from Git history but is
+removed from the paper-facing source tree. It is not part of the ICASSP method,
+results, commands, or release claims. Do not place Transformer outputs in an
+ICASSP results directory or table.
 
-## Repository Layout
+The tracked `data/` tree is likewise a legacy media archive, not evidence for
+the ICASSP ablations. It is omitted from the source-only submission package;
+the paper-facing aggregate records live under `paper/`.
 
+## Experimental unit and data boundary
+
+The unit of replication is a complete run-specific data/proxy realization.
+For each synthesizer and each seed `0..4`:
+
+1. a new dataset is generated;
+2. an explicit 80/10/10 encoder split is recorded in `splits.csv`;
+3. one proxy is fitted on the encoder-training partition, monitored on the
+   validation partition, and then frozen; encoder-test examples never update
+   or select its weights; and
+4. all four U-Net configurations share that dataset, split, feature statistics,
+   and frozen proxy.
+
+Accordingly, encoder-test examples are excluded from both proxy fitting and
+masked/supervised encoder training. The spectral results remain
+proxy-conditioned because the frozen learned proxy supplies the evaluation
+domain; they are not true-synthesizer reconstruction metrics.
+
+Expected layout:
+
+```text
+datasets/
+  fm/seed_0/
+    data/<stem>.wav
+    labels/<stem>.npy
+    splits.csv
+    parameter_schema.yaml
+  dx7/seed_0/...
+  tal/seed_0/...
 ```
-invsynth2/
-├── configs/                     # YAML configs for every stage and dataset
-├── environment.yml              # conda env (Windows-friendly, CUDA 12.1)
-├── scripts/                     # entry points
-│   ├── pretrain.py              # Stage 1 — SSL pre-training
-│   ├── train_proxy.py           # Stage 2 — Proxy training
-│   ├── finetune.py              # Stage 3 — Downstream inversion
-│   ├── itf_inference.py         # Stage 4 — ITF refinement at inference
-│   ├── evaluate.py              # All metrics on test set
-│   ├── run_mos_test.py          # Generate stimuli for MOS listening test
-│   └── compute_mos.py           # Aggregate MOS results from CSV
-└── src/invsynth2/
-    ├── data/                    # Dataset classes + DataModule
-    ├── models/                  # Encoders, PEN, Proxy, Decoder
-    ├── losses/                  # IMW, NT-Xent, MAE, log-spec, parameter losses
-    ├── training/                # LightningModules for each stage
-    ├── evaluation/              # Spec, SC, Melspec, MFCC, ACC metrics
-    └── utils/                   # STFT, parameter handling, masking
-```
 
-## Data Format
+`splits.csv` has exactly two columns, `stem` and `split`, where `split` is one
+of `train`, `val`, or `test`. A stem may occur once only. Proxy and encoder
+optimization use `train`; proxy checkpoint monitoring uses `val`; final
+evaluation uses `test`. The only complete-set pass computes the disclosed
+run-specific normalization extrema. Use five independently generated
+directories, not five random splits of one shared directory.
 
-Each dataset folder must contain:
+The original training datasets, commercial synthesizer plug-ins, run-specific
+feature constants, checkpoints, and raw per-run metric logs are not committed
+here. The checked-in aggregate table is a transcription of the authors'
+retained records, not a substitute for those artifacts. See
+[`ARTIFACT_STATUS.md`](ARTIFACT_STATUS.md) before making a reproduction claim.
 
-```
-<dataset_name>/                  # e.g. fm/, dx7/, talnoise/
-├── data/
-│   ├── 1.wav
-│   ├── 2.wav
-│   └── ...
-└── labels/
-    ├── 1.npy                   # 1D float array of synthesizer parameters
-    ├── 2.npy
-    └── ...
-```
+## Paper-locked preprocessing
 
-WAVs and labels are matched by filename stem. Files are loaded as 16 kHz mono and converted to log-magnitude STFT (Hann window 1024, hop 256) with global normalization.
+The ICASSP profiles in `configs/icassp2027.yaml` implement the manuscript's
+fixed tensor supports:
 
-The dataset loader uses an 80/10/10 train/val/test split, seeded for reproducibility.
+| Dataset | Source audio | Analysis support | Transform | Output |
+|---|---|---|---|---|
+| FM | 16,000 samples at 16 kHz | right-zero-pad to 16,384 | Hann STFT, FFT 512, hop 128 | 257 x 129 |
+| TAL | 16,000 samples at 16 kHz | right-zero-pad to 16,384 | Hann STFT, FFT 512, hop 128 | 257 x 129 |
+| DX7 | 66,150 samples at 22.05 kHz | right-zero-pad to 88,576 | Hann STFT, FFT 1024, hop 256, 257 mel bins | 257 x 347 |
 
-## Setup (Windows)
+The centered STFT uses constant (zero) boundary padding. For analyzed length
+`L`, its frame count is `1 + floor(L / hop)`. Magnitudes are converted to dB
+with `20 log10(max(magnitude, 1e-6))`, floored at -120 dB, and affinely mapped
+to `[-1, 1]` using run-specific extrema computed over the complete dataset.
+Those extrema are saved and reused by the proxy, encoder, and evaluator.
+Losses invert the affine map and dB compression; DX7 remains in mel-magnitude
+coordinates and is never pseudo-inverted to a linear STFT.
 
-The install is split into two steps to avoid `CondaMemoryError` (conda's solver
-runs out of RAM when resolving large environments with `pytorch` + `nvidia` +
-`conda-forge` simultaneously).
+## Installation
+
+Python 3.10 and the pinned PyTorch/Lightning versions used for the reported
+study are listed in `requirements-pip.txt`.
 
 ```bash
-# 1. Install Miniconda from https://docs.conda.io/en/latest/miniconda.html
-
-# 2. (Optional but RECOMMENDED) Switch to the libmamba solver — much faster
-#    and dramatically lower memory usage. Skip if you already have it.
-conda install -n base conda-libmamba-solver
-conda config --set solver libmamba
-
-# 3. From the project root, create the lightweight base env:
-conda env create -f environment.yml
-conda activate invsynth2
-
-# 4. Install the heavy stack via pip (PyTorch + Lightning).
-#    For GPU (CUDA 12.1):
-pip install --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements-pip.txt
-#    For CPU-only (smaller, no CUDA):
-# pip install -r requirements-pip.txt
-
-# 5. Install this package itself in editable mode:
-pip install -e .
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-pip.txt
+python -m pip install -e .
 ```
 
-### If you still hit `CondaMemoryError`
-
-This means conda's classic solver is still being used. Try:
+## Validate the artifact before training
 
 ```bash
-# Option A: install mamba (much lighter than conda's solver)
-conda install -n base -c conda-forge mamba
-mamba env create -f environment.yml
-
-# Option B: bypass conda for everything except Python itself
-conda create -n invsynth2 python=3.10
-conda activate invsynth2
-pip install --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements-pip.txt
-pip install numpy scipy pandas matplotlib librosa soundfile tqdm pyyaml
-pip install -e .
+python scripts/audit_icassp_artifact.py \
+  --config configs/icassp2027.yaml \
+  --data-root datasets
 ```
 
-## Quick Start
+The audit checks all 15 dataset directories, split disjointness and expected
+counts, audio/label pairing, feature shapes, declared parameter schemas, and
+the paper's four-row training grid. It fails closed when required factual
+artifacts are missing.
 
-### Stage 1: Pre-train an encoder
+## Reproduce one run
+
+The proxy is run-specific and must be trained before encoder configurations:
 
 ```bash
-# Transformer (contrastive)
-python scripts/pretrain.py --config configs/pretrain_transformer.yaml --dataset fm
+python scripts/train_proxy.py --study-config configs/icassp2027.yaml \
+  --dataset fm --seed 0 --data-root datasets --run-dir runs
 
-# U-Net (MAE)
-python scripts/pretrain.py --config configs/pretrain_unet.yaml --dataset fm
+python scripts/pretrain.py --study-config configs/icassp2027.yaml \
+  --dataset fm --seed 0 --data-root datasets --run-dir runs
+
+python scripts/finetune.py --study-config configs/icassp2027.yaml \
+  --dataset fm --seed 0 --configuration masked_imw \
+  --feature-stats runs/fm/seed_0/feature_stats.json \
+  --proxy-ckpt runs/fm/seed_0/proxy/proxy.pt \
+  --encoder-ckpt runs/fm/seed_0/pretrain/encoder.pt --run-dir runs
+
+python scripts/evaluate.py --study-config configs/icassp2027.yaml \
+  --dataset fm --seed 0 --configuration masked_imw \
+  --finetuned-ckpt runs/fm/seed_0/masked_imw/ckpts/<checkpoint>.ckpt \
+  --feature-stats runs/fm/seed_0/feature_stats.json \
+  --data-root datasets --apply-itf --itf-steps 100 --itf-lr 1e-2
 ```
 
-### Stage 2: Train the proxy
+To print or launch the full 3-dataset x 5-seed grid:
 
 ```bash
-python scripts/train_proxy.py --config configs/proxy.yaml --dataset fm
+python scripts/run_icassp_study.py --dry-run
+python scripts/run_icassp_study.py
 ```
 
-### Stage 3: Fine-tune for inversion
+The runner trains one proxy and one masked U-Net per dataset/seed, then runs
+the three pretrained objectives and the 60k-update supervised control. It
+never invokes Transformer code.
 
-```bash
-python scripts/finetune.py \
-  --config configs/finetune_transformer.yaml \
-  --dataset fm \
-  --encoder-ckpt runs/pretrain_transformer_fm/last.ckpt \
-  --proxy-ckpt runs/proxy_fm/last.ckpt \
-  --loss imw                          # or: log_spec, spec_only
-  --skip-pretrain                     # for w/o-SSL ablation row
-```
+## Reported aggregate results
 
-### Stage 4: ITF at inference
+`paper/reported_aggregate_results.csv` contains the means and standard
+deviations printed in the manuscript. `scripts/aggregate_results.py` computes
+sample means/SDs from raw run JSON files and refuses to infer paired tests from
+marginal summaries.
 
-```bash
-python scripts/itf_inference.py \
-  --finetuned-ckpt runs/finetune_transformer_fm/best.ckpt \
-  --dataset fm \
-  --steps 100
-```
+## Listening study
 
-### Evaluation (all metrics)
-
-```bash
-python scripts/evaluate.py \
-  --finetuned-ckpt runs/finetune_transformer_fm/best.ckpt \
-  --dataset fm \
-  --apply-itf
-```
-
-### TensorBoard
-
-```bash
-tensorboard --logdir runs/
-```
-
-### MOS Listening Test
-
-```bash
-# 1. Generate audio stimuli (target + reconstructions per system)
-python scripts/run_mos_test.py \
-  --output-dir mos_stimuli/ \
-  --datasets fm dx7 talnoise \
-  --systems is2 transformer unet \
-  --n-stimuli 3
-
-# 2. Distribute to listeners; collect ratings into a CSV with columns:
-#    listener_id, dataset, system, stimulus_id, rating
-# 3. Aggregate
-python scripts/compute_mos.py \
-  --ratings ratings.csv \
-  --output mos_results.json
-```
-
-## Reproducing Paper Tables
-
-For each of `fm`, `dx7`, `talnoise`, run all 8 ablation configurations:
-
-| Config | Encoder | SSL | Loss |
-|---|---|---|---|
-| Trans (full)  | Transformer | yes | IMW   |
-| Trans w/o IMW | Transformer | yes | spec  |
-| Trans w/ log  | Transformer | yes | log   |
-| Trans w/o SSL | Transformer | no  | IMW   |
-| U-Net (full)  | U-Net       | yes | IMW   |
-| U-Net w/o IMW | U-Net       | yes | spec  |
-| U-Net w/ log  | U-Net       | yes | log   |
-| U-Net w/o SSL | U-Net       | no  | IMW   |
-
-Each run uses 5 seeds. The `scripts/run_full_ablation.py` script orchestrates this.
+The paper used hard-decoded presets rendered by the target synthesizers.
+Proxy spectrogram inversion or Griffin-Lim audio is not a substitute. The
+repository includes only the listener-level aggregation utility; generation
+of true-synthesizer stimuli requires the authors' licensed synthesizer setup.
 
 ## License
 
-MIT.
+MIT. See [`LICENSE`](LICENSE).

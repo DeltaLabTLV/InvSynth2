@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the accompanying ICASSP 2027 paper."
+title: "Masked Reconstruction Pretraining for Proxy-Based Synthesizer Inversion"
+type: software
+version: 2.0.0
+date-released: 2026-09-15
+repository-code: "https://github.com/DeltaLabTLV/InvSynth2"
+authors:
+  - family-names: Laufer
+    given-names: Moshe
+    affiliation: Tel Aviv University
+  - family-names: Barkan
+    given-names: Oren
+    affiliation: The Open University of Israel
+  - family-names: Koenigstein
+    given-names: Noam
+    affiliation: Tel Aviv University

@@ -1,0 +1,25 @@
+configuration,display_name,dataset,metric,mean,sd,n_runs,provenance
+masked_imw,Masked + IMW,FM,Spec,1.48,0.08,5,authors_retained_aggregate_records
+masked_imw,Masked + IMW,FM,SC,0.0298,0.0018,5,authors_retained_aggregate_records
+masked_imw,Masked + IMW,DX7,Spec,56.93,4.0,5,authors_retained_aggregate_records
+masked_imw,Masked + IMW,DX7,SC,0.8502,0.035,5,authors_retained_aggregate_records
+masked_imw,Masked + IMW,TAL,Spec,0.167,0.015,5,authors_retained_aggregate_records
+masked_imw,Masked + IMW,TAL,SC,0.400,0.021,5,authors_retained_aggregate_records
+masked_spectral,Masked + spectral-only,FM,Spec,1.51,0.04,5,authors_retained_aggregate_records
+masked_spectral,Masked + spectral-only,FM,SC,0.0314,0.0008,5,authors_retained_aggregate_records
+masked_spectral,Masked + spectral-only,DX7,Spec,57.28,2.9,5,authors_retained_aggregate_records
+masked_spectral,Masked + spectral-only,DX7,SC,0.8545,0.042,5,authors_retained_aggregate_records
+masked_spectral,Masked + spectral-only,TAL,Spec,0.173,0.014,5,authors_retained_aggregate_records
+masked_spectral,Masked + spectral-only,TAL,SC,0.413,0.026,5,authors_retained_aggregate_records
+masked_log,Masked + log mixture,FM,Spec,1.50,0.02,5,authors_retained_aggregate_records
+masked_log,Masked + log mixture,FM,SC,0.0306,0.0028,5,authors_retained_aggregate_records
+masked_log,Masked + log mixture,DX7,Spec,57.08,3.7,5,authors_retained_aggregate_records
+masked_log,Masked + log mixture,DX7,SC,0.8520,0.057,5,authors_retained_aggregate_records
+masked_log,Masked + log mixture,TAL,Spec,0.170,0.009,5,authors_retained_aggregate_records
+masked_log,Masked + log mixture,TAL,SC,0.406,0.026,5,authors_retained_aggregate_records
+supervised_imw,Supervised + IMW,FM,Spec,1.55,0.08,5,authors_retained_aggregate_records
+supervised_imw,Supervised + IMW,FM,SC,0.0338,0.0022,5,authors_retained_aggregate_records
+supervised_imw,Supervised + IMW,DX7,Spec,57.95,3.9,5,authors_retained_aggregate_records
+supervised_imw,Supervised + IMW,DX7,SC,0.8625,0.075,5,authors_retained_aggregate_records
+supervised_imw,Supervised + IMW,TAL,Spec,0.181,0.016,5,authors_retained_aggregate_records
+supervised_imw,Supervised + IMW,TAL,SC,0.430,0.042,5,authors_retained_aggregate_records

@@ -2,7 +2,7 @@
 
 This module implements three alternatives the paper compares:
 
-1. Standard spectral loss (L1 + L2 in linear-magnitude domain). Eq. (5).
+1. Standard spectral loss (L1 + L2 in native magnitude coordinates).
 2. Inverse-Magnitude Weighted (IMW) loss — the paper's contribution. Eq. (3).
 3. Log-magnitude spectral loss (L2 between log-mags) — competitor baseline.
 
@@ -30,9 +30,8 @@ class IMWLoss(nn.Module):
     The weight depends only on the target |X|, so it is treated as a constant
     with respect to |X̂| (no gradient flows through it).
 
-    The paper uses ε = 1e-7 in the linear-magnitude domain after global
-    normalization. We keep that default and confirm in the paper that smaller
-    epsilon increased gradient variance without improving val error.
+    The paper uses ε = 1e-7 in native nonnegative magnitude coordinates.
+    Reciprocal formation and all reductions are forced to FP32 under autocast.
     """
 
     def __init__(self, epsilon: float = 1e-7, reduction: str = "mean"):
@@ -43,18 +42,19 @@ class IMWLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, pred_lin_mag: torch.Tensor, target_lin_mag: torch.Tensor) -> torch.Tensor:
-        # Detach the weights — gradient flows only through (pred - target)^2.
-        with torch.no_grad():
-            weight = 1.0 / (target_lin_mag + self.epsilon)
-        sq_err = (pred_lin_mag - target_lin_mag) ** 2
-        loss_per_bin = weight * sq_err
-        if self.reduction == "mean":
-            return loss_per_bin.mean()
-        return loss_per_bin.sum()
+        with torch.autocast(device_type=pred_lin_mag.device.type, enabled=False):
+            pred32 = pred_lin_mag.float()
+            target32 = target_lin_mag.float()
+            # Target-only weight: no gradient path through the denominator.
+            weight = torch.reciprocal(target32.detach() + self.epsilon)
+            loss_per_bin = weight * (pred32 - target32).square()
+            if self.reduction == "mean":
+                return loss_per_bin.mean()
+            return loss_per_bin.sum()
 
 
 class StandardSpecLoss(nn.Module):
-    """L_spec = α1 |X̂ - X|_1 + α2 |X̂ - X|_2^2 in the linear-magnitude domain. Eq. (5)."""
+    """Per-bin mean of weighted absolute and squared native-magnitude residuals."""
 
     def __init__(self, alpha1: float = 1.0, alpha2: float = 1.0):
         super().__init__()
@@ -62,9 +62,11 @@ class StandardSpecLoss(nn.Module):
         self.alpha2 = alpha2
 
     def forward(self, pred_lin_mag: torch.Tensor, target_lin_mag: torch.Tensor) -> torch.Tensor:
-        l1 = (pred_lin_mag - target_lin_mag).abs().mean()
-        l2 = ((pred_lin_mag - target_lin_mag) ** 2).mean()
-        return self.alpha1 * l1 + self.alpha2 * l2
+        with torch.autocast(device_type=pred_lin_mag.device.type, enabled=False):
+            residual = pred_lin_mag.float() - target_lin_mag.float()
+            l1 = residual.abs().mean()
+            l2 = residual.square().mean()
+            return self.alpha1 * l1 + self.alpha2 * l2
 
 
 class LogSpecLoss(nn.Module):
@@ -78,8 +80,11 @@ class LogSpecLoss(nn.Module):
         self.epsilon = epsilon
 
     def forward(self, pred_lin_mag: torch.Tensor, target_lin_mag: torch.Tensor) -> torch.Tensor:
-        diff = torch.log(pred_lin_mag + self.epsilon) - torch.log(target_lin_mag + self.epsilon)
-        return (diff**2).mean()
+        with torch.autocast(device_type=pred_lin_mag.device.type, enabled=False):
+            pred32 = pred_lin_mag.float()
+            target32 = target_lin_mag.float()
+            diff = torch.log(pred32 + self.epsilon) - torch.log(target32 + self.epsilon)
+            return diff.square().mean()
 
 
 class ReconstructionLoss(nn.Module):

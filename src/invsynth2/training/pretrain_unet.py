@@ -1,9 +1,8 @@
 """LightningModule for Stage 1b: U-Net MAE pre-training.
 
-Per the paper (§3.2): rectangular pixel masks (~45% coverage from 6.5% centers
-+ 3x3 region) are placed on the spectrogram; the encoder + decoder are jointly
-trained to reconstruct the full spectrogram from the visible context. Only the
-encoder is retained for downstream inversion.
+Rectangular pixel masks (~45% coverage from 6.5% centers + 3x3 regions)
+are reconstructed only on their union. Inputs are padded to multiples of 16
+before four pooling levels and cropped back before the masked reduction.
 """
 
 from __future__ import annotations
@@ -50,14 +49,19 @@ class UNetPretrainModule(L.LightningModule):
         masked_input = log_mag_norm.clone()
         masked_input[mask] = 0.0
 
-        # Forward through the encoder-decoder.
-        x_in = masked_input.unsqueeze(1)                 # (B, 1, F, T)
-        recon = self.model(x_in).squeeze(1)              # (B, F, T)
+        # Paper-locked U-Net support: pad high-frequency/trailing-time edges,
+        # pass four pooling levels, and crop before evaluating the loss.
+        pad_f = (-F_) % 16
+        pad_t = (-T) % 16
+        x_in = F.pad(masked_input, (0, pad_t, 0, pad_f)).unsqueeze(1)
+        recon = self.model(x_in).squeeze(1)[..., :F_, :T]
 
         # Loss is MSE on MASKED bins only — standard MAE objective.
-        loss_per_bin = (recon - log_mag_norm) ** 2
-        n_masked = mask.float().sum().clamp(min=1.0)
-        loss = (loss_per_bin * mask.float()).sum() / n_masked
+        with torch.autocast(device_type=recon.device.type, enabled=False):
+            loss_per_bin = (recon.float() - log_mag_norm.float()).square()
+            mask32 = mask.float()
+            n_masked = mask32.sum().clamp(min=1.0)
+            loss = (loss_per_bin * mask32).sum() / n_masked
 
         self.log(f"{stage}/mae_recon", loss, prog_bar=(stage == "train"), on_step=(stage == "train"), on_epoch=True, sync_dist=True)
         return loss
@@ -69,7 +73,7 @@ class UNetPretrainModule(L.LightningModule):
         return self._shared_step(batch, "val")
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(
+        return torch.optim.Adam(
             self.parameters(),
             lr=self.hparams.learning_rate,
             weight_decay=self.hparams.weight_decay,

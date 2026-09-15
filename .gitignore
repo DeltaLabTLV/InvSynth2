@@ -1,2 +1,16 @@
 /.venv/
 /.pytest_cache/
+/.idea/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+/runs/
+/datasets/
+/mos_stimuli/
+*.ckpt
+*.pt
+*.pth
+*.npz
+*.npy

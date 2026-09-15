@@ -1,0 +1,154 @@
+schema_version: 1
+paper: "Masked Reconstruction Pretraining for Proxy-Based Synthesizer Inversion"
+seeds: [0, 1, 2, 3, 4]
+
+data:
+  split_filename: splits.csv
+  parameter_schema_filename: parameter_schema.yaml
+  audio_directory: data
+  label_directory: labels
+  train_fraction: 0.8
+  validation_fraction: 0.1
+  test_fraction: 0.1
+  batch_size: 32
+  num_workers: 4
+
+datasets:
+  fm:
+    directory: fm
+    expected_examples: 180000
+    expected_continuous_controls: 0
+    expected_categorical_controls: 9
+    source_sample_rate: 16000
+    source_num_samples: 16000
+    analysis_num_samples: 16384
+    n_fft: 512
+    win_length: 512
+    hop_length: 128
+    n_mels: null
+    mel_fmin: 0.0
+    mel_fmax: null
+    expected_freq_bins: 257
+    expected_frames: 129
+  dx7:
+    directory: dx7
+    expected_examples: 30000
+    expected_continuous_controls: 90
+    expected_categorical_controls: 54
+    source_sample_rate: 22050
+    source_num_samples: 66150
+    analysis_num_samples: 88576
+    n_fft: 1024
+    win_length: 1024
+    hop_length: 256
+    n_mels: 257
+    mel_fmin: 30.0
+    mel_fmax: 11000.0
+    expected_freq_bins: 257
+    expected_frames: 347
+  tal:
+    directory: tal
+    expected_examples: 180000
+    expected_continuous_controls: 0
+    expected_categorical_controls: 9
+    source_sample_rate: 16000
+    source_num_samples: 16000
+    analysis_num_samples: 16384
+    n_fft: 512
+    win_length: 512
+    hop_length: 128
+    n_mels: null
+    mel_fmin: 0.0
+    mel_fmax: null
+    expected_freq_bins: 257
+    expected_frames: 129
+
+features:
+  center: true
+  stft_pad_mode: constant
+  hann_periodic: false
+  magnitude_power: 1.0
+  log_scale: db_amplitude
+  db_multiplier: 20.0
+  db_reference: 1.0
+  magnitude_floor: 1.0e-6
+  db_floor: -120.0
+  normalization: min_max_to_minus_one_one
+  statistics_scope: complete_run_dataset
+  dx7_order: magnitude_then_mel_then_db
+
+model:
+  encoder: unet
+  base_channels: 28
+  channel_widths: [28, 56, 112, 224, 448]
+  convolutions_per_level: 2
+  convolution_kernel: [3, 3]
+  normalization: group_norm
+  max_groups: 8
+  activation: gelu
+  pooling: max_pool_2x2
+  upsampling: transposed_convolution_2x2
+  skip_connections: concatenation
+  pad_encoder_inputs_to_multiple: 16
+  pen_hidden_layers: [256, 256]
+  pen_dropout: 0.1
+
+masking:
+  center_ratio: 0.065
+  region_size: 3
+  value_after_normalization: 0.0
+  loss_support: masked_bins_only
+
+loss:
+  alpha_l1: 1.0
+  alpha_l2: 1.0
+  beta: 0.7
+  epsilon: 1.0e-7
+  log_delta: 1.0e-7
+  reduction: per_example_mean_over_time_frequency
+  arithmetic_dtype: float32
+  lambda_reconstruction: 1.0
+  lambda_parameter: 1.0
+  lambda_regression: 1.0
+  lambda_classification: 1.0
+
+optimization:
+  optimizer: adam
+  beta1: 0.9
+  beta2: 0.999
+  weight_decay: 1.0e-6
+  batch_size: 32
+  gradient_clip_norm: 1.0
+  precision: 16-mixed
+  deterministic: true
+  unet_learning_rate: 1.0e-4
+  proxy_learning_rate: 1.0e-4
+  proxy_max_epochs: 200
+  masked_pretraining_updates: 50000
+  pretrained_supervised_updates: 10000
+  supervised_only_updates: 60000
+  refinement_optimizer: adam
+  refinement_updates: 100
+  refinement_learning_rate: 1.0e-2
+
+configurations:
+  masked_imw:
+    display_name: "Masked + IMW"
+    pretraining: true
+    supervised_updates: 10000
+    reconstruction: imw
+  masked_spectral:
+    display_name: "Masked + spectral-only"
+    pretraining: true
+    supervised_updates: 10000
+    reconstruction: spec_only
+  masked_log:
+    display_name: "Masked + log mixture"
+    pretraining: true
+    supervised_updates: 10000
+    reconstruction: log_spec
+  supervised_imw:
+    display_name: "Supervised + IMW"
+    pretraining: false
+    supervised_updates: 60000
+    reconstruction: imw

@@ -6,15 +6,14 @@
   for downstream inversion.
 - Encoder ≈ 3.5M params. Skip connections support multi-resolution recovery.
 
-Operates on log-magnitude spectrograms shaped (B, 1, F, T). For F=513, T=63
-the model has 4 down/up levels.
+Operates on normalized dB spectrograms. Paper entry points zero-pad the high
+frequency/trailing-time edges to multiples of 16 before four down/up levels.
 """
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class ConvBlock(nn.Module):
@@ -59,9 +58,11 @@ class Up(nn.Module):
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = self.up(x)
-        # Pad if odd-sized skip from non-power-of-two F dimensions.
         if x.shape[-2:] != skip.shape[-2:]:
-            x = F.interpolate(x, size=skip.shape[-2:], mode="nearest")
+            raise RuntimeError(
+                f"U-Net skip shape mismatch {x.shape[-2:]} vs {skip.shape[-2:]}; "
+                "paper inputs must be padded to multiples of 16 before encoding"
+            )
         x = torch.cat([skip, x], dim=1)
         return self.conv(x)
 

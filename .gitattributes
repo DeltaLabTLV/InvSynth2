@@ -1,0 +1,9 @@
+# Keep legacy media in repository history but out of source-release archives.
+data/TalNoiseMaker export-ignore
+data/dax export-ignore
+data/spectrograms export-ignore
+
+# Local development metadata and generated artifacts never belong in releases.
+.idea export-ignore
+**/__pycache__ export-ignore
+**/*.egg-info export-ignore

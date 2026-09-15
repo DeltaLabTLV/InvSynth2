@@ -5,10 +5,8 @@ The full pipeline:
     θ̂ → frozen proxy P → predicted spectrogram
     L_total = L_rec(P(θ̂), X) + L_reg(θ̂_cont, θ_cont) + L_cls(θ̂_cat, θ_cat)
 
-This module supports the full ablation grid:
-    encoder ∈ {Transformer, U-Net encoder}
-    use_pretrained_encoder ∈ {True, False}    (the "w/o SSL" row)
-    loss mode ∈ {imw, log_spec, spec_only}    (the loss-design ablation)
+The ICASSP release exposes only the U-Net path. The exploratory Transformer
+implementation remains available in the repository's earlier history.
 
 ITF (Stage 4) is implemented as a separate inference-time function below.
 """
@@ -21,12 +19,12 @@ import torch.nn as nn
 
 from invsynth2.losses.parameter import ParameterLoss
 from invsynth2.losses.spectral import ReconstructionLoss
-from invsynth2.models.pen import PEN, pool_transformer_features, pool_unet_features
+from invsynth2.models.pen import PEN, pool_unet_features
 from invsynth2.models.proxy import IS2Proxy
-from invsynth2.models.transformer import make_transformer_encoder
 from invsynth2.models.unet import UNetEncoder
 from invsynth2.utils.parameters import (
     ParameterSpec,
+    compose_proxy_vector,
     parameter_accuracy,
     split_label,
 )
@@ -40,7 +38,7 @@ class FineTuneModule(L.LightningModule):
         self,
         stft_cfg: STFTConfig,
         spec: ParameterSpec,
-        encoder_kind: str = "transformer",       # "transformer" or "unet"
+        encoder_kind: str = "unet",
         loss_mode: str = "imw",                  # "imw" / "log_spec" / "spec_only"
         beta: float = 0.7,
         alpha1: float = 1.0,
@@ -50,7 +48,6 @@ class FineTuneModule(L.LightningModule):
         lambda_rec: float = 1.0,
         lambda_reg: float = 1.0,
         lambda_cls: float = 1.0,
-        learning_rate_transformer: float = 5e-5,
         learning_rate_unet: float = 1e-4,
         weight_decay: float = 1e-6,
         max_grad_norm: float = 1.0,
@@ -62,25 +59,18 @@ class FineTuneModule(L.LightningModule):
 
         self.stft = STFTComputer(stft_cfg)
 
-        # Encoder selection.
-        if encoder_kind == "transformer":
-            self.encoder = make_transformer_encoder()
-            self._pool = "transformer"
-            feature_dim = self.encoder.embed_dim
-        elif encoder_kind == "unet":
-            self.encoder = UNetEncoder(base_ch=28)
-            self._pool = "unet"
-            feature_dim = self.encoder.bottleneck_dim
-        else:
-            raise ValueError(f"Unknown encoder_kind {encoder_kind!r}")
+        if encoder_kind != "unet":
+            raise ValueError("The ICASSP release supports encoder_kind='unet' only")
+        self.encoder = UNetEncoder(base_ch=28)
+        feature_dim = self.encoder.bottleneck_dim
 
         self.pen = PEN(in_dim=feature_dim, spec=spec)
 
         # Proxy is created here but its weights are loaded externally and frozen.
         self.proxy = IS2Proxy(
             n_params=spec.n_total,
-            out_freq=stft_cfg.n_fft // 2 + 1,
-            out_time=64,  # Will be auto-adjusted on first forward pass.
+            out_freq=stft_cfg.output_freq_bins,
+            out_time=stft_cfg.output_frames,
         )
         for p in self.proxy.parameters():
             p.requires_grad = False
@@ -111,12 +101,11 @@ class FineTuneModule(L.LightningModule):
     # ----------------------------------------------------------------------
     def encode(self, log_mag_norm: torch.Tensor) -> torch.Tensor:
         """Run encoder + pooling → (B, D)."""
-        if self._pool == "transformer":
-            tokens = self.encoder(log_mag_norm)             # (B, T, D)
-            return pool_transformer_features(tokens)        # (B, D)
-        else:
-            feats = self.encoder(log_mag_norm.unsqueeze(1)) # (B, 1, F, T)
-            return pool_unet_features(feats["bottleneck"])  # (B, C)
+        pad_f = (-log_mag_norm.shape[-2]) % 16
+        pad_t = (-log_mag_norm.shape[-1]) % 16
+        padded = torch.nn.functional.pad(log_mag_norm, (0, pad_t, 0, pad_f))
+        feats = self.encoder(padded.unsqueeze(1))
+        return pool_unet_features(feats["bottleneck"])
 
     def forward(self, wav: torch.Tensor) -> dict:
         """Inference: wav → θ̂ (continuous + categorical heads)."""
@@ -138,7 +127,8 @@ class FineTuneModule(L.LightningModule):
         feats = self.encode(log_mag_norm)
         head_out = self.pen(feats)                                    # {"cont", "cat_logits"}
 
-        # 2. Compose θ̂: use continuous predictions directly + argmax categorical
+        # 2. Compose a differentiable proxy input. Categorical softmax blocks
+        # remain relaxed during training and refinement.
         theta_hat = self._compose_theta(head_out, theta_gt)
 
         # 3. Frozen proxy → predicted spectrogram (in normalized log-mag domain)
@@ -181,27 +171,11 @@ class FineTuneModule(L.LightningModule):
         return loss
 
     def _compose_theta(self, head_out: dict, theta_gt: torch.Tensor) -> torch.Tensor:
-        """Build a (B, n_total) theta_hat from head outputs.
+        """Build the relaxed, proxy-facing vector from PEN outputs."""
 
-        For continuous parameters we use the predicted values directly. For
-        categorical parameters we use the argmax of the logits but also pass
-        gradients through (using straight-through Gumbel softmax-like estimator
-        would give better gradients; here we use a soft expectation as a smooth
-        relaxation since parameter values and class indices coincide).
-        """
-        B = theta_gt.shape[0]
-        out = torch.zeros_like(theta_gt)
-        if head_out["cont"].shape[-1] > 0:
-            out[..., list(self.spec.cont_indices)] = head_out["cont"]
-        for k, (idx, num_classes) in enumerate(self.spec.cat_specs):
-            logits = head_out["cat_logits"][k]
-            # Soft expectation: sum_i softmax(logits)_i * i, scaled to [0, 1].
-            probs = torch.softmax(logits, dim=-1)
-            class_grid = torch.arange(num_classes, device=logits.device, dtype=logits.dtype)
-            soft_idx = (probs * class_grid).sum(dim=-1)
-            # Use the soft index in the proxy's input to keep gradients flowing.
-            out[..., idx] = soft_idx
-        return out
+        del theta_gt  # kept in the signature for checkpoint/API compatibility
+        blocks = [torch.softmax(logits, dim=-1) for logits in head_out["cat_logits"]]
+        return compose_proxy_vector(head_out["cont"], blocks, self.spec)
 
     def training_step(self, batch, batch_idx):
         return self._shared_step(batch, "train")
@@ -213,28 +187,15 @@ class FineTuneModule(L.LightningModule):
         return self._shared_step(batch, "test")
 
     def configure_optimizers(self):
-        lr = (
-            self.hparams.learning_rate_transformer
-            if self.hparams.encoder_kind == "transformer"
-            else self.hparams.learning_rate_unet
-        )
-        optimizer = torch.optim.AdamW(
+        optimizer = torch.optim.Adam(
             [p for p in self.parameters() if p.requires_grad],
-            lr=lr,
+            lr=self.hparams.learning_rate_unet,
             weight_decay=self.hparams.weight_decay,
             betas=(0.9, 0.999),
         )
         return {
             "optimizer": optimizer,
         }
-
-    def on_after_backward(self):
-        # Manual gradient clipping per the paper (max_norm=1.0).
-        torch.nn.utils.clip_grad_norm_(
-            [p for p in self.parameters() if p.requires_grad],
-            self.hparams.max_grad_norm,
-        )
-
 
 def nn_resize_time(x: torch.Tensor, target_T: int) -> torch.Tensor:
     """Bilinear resize the time axis of an (B, F, T) magnitude spectrogram."""

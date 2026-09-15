@@ -16,7 +16,6 @@ module:
   lambda_rec: 1.0
   lambda_reg: 1.0
   lambda_cls: 1.0
-  learning_rate_transformer: 5.0e-5
   learning_rate_unet: 1.0e-4
   weight_decay: 1.0e-6
   max_grad_norm: 1.0

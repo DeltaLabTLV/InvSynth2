@@ -1,133 +1,99 @@
-"""Stage 1: SSL pre-training.
-
-Usage
------
-    python scripts/pretrain.py --config configs/pretrain_transformer.yaml --dataset fm
-    python scripts/pretrain.py --config configs/pretrain_unet.yaml        --dataset fm
-"""
+"""Run the 50,000-update masked-reconstruction U-Net stage."""
 
 from __future__ import annotations
 
-# --- Make sibling 'scripts' modules importable when launched as a script ---
-import sys
-from pathlib import Path
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-# --------------------------------------------------------------------------
-
 import argparse
 from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import lightning as L
 import torch
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+from lightning.pytorch.callbacks import ModelCheckpoint
 
-from invsynth2.data import SynthDataModule
-from invsynth2.training import TransformerPretrainModule, UNetPretrainModule
-from invsynth2.utils.stft import (
-    STFTComputer,
-    STFTConfig,
-    compute_global_log_mag_stats,
+from invsynth2.repro import (
+    default_stats_path,
+    load_feature_config,
+    make_data_module,
 )
-from scripts.common import load_config, make_tb_logger
+from invsynth2.study import dataset_profile, load_study_config, run_output_dir
+from invsynth2.training import UNetPretrainModule
+from scripts.common import make_tb_logger
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--dataset", type=str, required=True, help="fm | dx7 | talnoise")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--run-dir", type=str, default="runs")
-    parser.add_argument("--max-epochs", type=int, default=None, help="override config max_epochs")
+    parser.add_argument("--study-config", default="configs/icassp2027.yaml")
+    parser.add_argument("--dataset", required=True, choices=["fm", "dx7", "tal"])
+    parser.add_argument("--seed", type=int, required=True, choices=range(5))
+    parser.add_argument("--data-root", default="datasets")
+    parser.add_argument("--run-dir", default="runs")
+    parser.add_argument("--feature-stats", default=None)
+    parser.add_argument("--max-steps", type=int, default=None)
     args = parser.parse_args()
 
+    cfg = load_study_config(args.study_config)
+    profile = dataset_profile(cfg, args.dataset)
     L.seed_everything(args.seed, workers=True)
-    cfg = load_config(args.config)
-
-    # ---- Data ----
-    dm = SynthDataModule(
-        root=cfg["dataset"]["root"],
-        dataset_name=args.dataset,
-        batch_size=cfg["dataset"]["batch_size"],
-        num_workers=cfg["dataset"]["num_workers"],
-        target_seconds=cfg["dataset"]["target_seconds"],
-        sample_rate=cfg["dataset"]["sample_rate"],
-        train_frac=cfg["dataset"]["train_frac"],
-        val_frac=cfg["dataset"]["val_frac"],
-        seed=args.seed,
-    )
+    dm = make_data_module(cfg, profile, args.seed, args.data_root)
     dm.setup()
 
-    # ---- Compute & freeze global STFT normalization stats ----
-    stft_cfg_init = STFTConfig(
-        sample_rate=cfg["stft"]["sample_rate"],
-        n_fft=cfg["stft"]["n_fft"],
-        hop_length=cfg["stft"]["hop_length"],
-        win_length=cfg["stft"]["win_length"],
-        eps=cfg["stft"]["eps"],
+    stats_path = Path(args.feature_stats) if args.feature_stats else default_stats_path(
+        args.run_dir, args.dataset, args.seed
     )
-    probe_stft = STFTComputer(stft_cfg_init)
-    mean, std = compute_global_log_mag_stats(dm.train_dataloader(), probe_stft, max_batches=200)
-    print(f"[Global STFT] log-mag mean={mean:.4f} std={std:.4f}")
-    stft_cfg = STFTConfig(
-        sample_rate=stft_cfg_init.sample_rate,
-        n_fft=stft_cfg_init.n_fft,
-        hop_length=stft_cfg_init.hop_length,
-        win_length=stft_cfg_init.win_length,
-        eps=stft_cfg_init.eps,
-        log_mag_mean=mean, log_mag_std=std,
+    feature_cfg = load_feature_config(cfg, profile, args.seed, stats_path)
+    module = UNetPretrainModule(
+        stft_cfg=feature_cfg,
+        learning_rate=cfg["optimization"]["unet_learning_rate"],
+        weight_decay=cfg["optimization"]["weight_decay"],
+        mask_center_ratio=cfg["masking"]["center_ratio"],
+        mask_region_size=cfg["masking"]["region_size"],
     )
 
-    # ---- Module ----
-    stage = cfg["stage"]
-    if stage == "pretrain_transformer":
-        module = TransformerPretrainModule(stft_cfg=stft_cfg, **cfg["module"])
-    elif stage == "pretrain_unet":
-        module = UNetPretrainModule(stft_cfg=stft_cfg, **cfg["module"])
-    else:
-        raise ValueError(f"Unknown stage {stage!r}")
-
-    # ---- Trainer ----
-    run_name = f"{stage}_{args.dataset}_seed{args.seed}"
-    logger = make_tb_logger(args.run_dir, run_name)
-    callbacks = [
-        ModelCheckpoint(
-            dirpath=str(Path(args.run_dir) / run_name / "ckpts"),
-            **cfg["callbacks"]["ckpt"],
-        ),
-        EarlyStopping(**cfg["callbacks"]["early_stop"]),
-        LearningRateMonitor(),
-    ]
+    output_dir = run_output_dir(args.run_dir, args.dataset, args.seed) / "pretrain"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = ModelCheckpoint(
+        dirpath=str(output_dir / "ckpts"),
+        monitor="val/mae_recon",
+        mode="min",
+        save_top_k=1,
+        save_last=True,
+    )
+    max_steps = args.max_steps or cfg["optimization"]["masked_pretraining_updates"]
     trainer = L.Trainer(
-        max_epochs=args.max_epochs or cfg["trainer"]["max_epochs"],
-        accelerator=cfg["trainer"]["accelerator"],
-        devices=cfg["trainer"]["devices"],
-        precision=cfg["trainer"]["precision"],
-        log_every_n_steps=cfg["trainer"]["log_every_n_steps"],
-        gradient_clip_val=cfg["trainer"]["gradient_clip_val"],
-        deterministic=cfg["trainer"].get("deterministic", False),
-        callbacks=callbacks,
-        logger=logger,
-        default_root_dir=str(Path(args.run_dir) / run_name),
+        max_epochs=-1,
+        max_steps=max_steps,
+        accelerator="auto",
+        devices=1,
+        precision=cfg["optimization"]["precision"],
+        gradient_clip_val=cfg["optimization"]["gradient_clip_norm"],
+        deterministic=cfg["optimization"]["deterministic"],
+        callbacks=[checkpoint],
+        logger=make_tb_logger(output_dir, "logs"),
+        default_root_dir=str(output_dir),
     )
-
     trainer.fit(module, datamodule=dm)
+    if trainer.global_step != max_steps:
+        raise RuntimeError(f"Expected {max_steps} pretraining updates, got {trainer.global_step}")
 
-    # Save the encoder-only state dict for downstream stages.
-    out_dir = Path(args.run_dir) / run_name
-    encoder_sd = module.get_encoder_state_dict()
     torch.save(
         {
-            "encoder_state_dict": encoder_sd,
-            "stft_config": stft_cfg.__dict__,
-            "stage": stage,
-            "dataset": args.dataset,
+            "encoder_state_dict": module.get_encoder_state_dict(),
+            "stft_config": feature_cfg.to_dict(),
+            "stage": "masked_reconstruction",
+            "dataset": profile.name,
             "seed": args.seed,
+            "encoder_updates": trainer.global_step,
+            "mask_center_ratio": cfg["masking"]["center_ratio"],
+            "mask_region_size": cfg["masking"]["region_size"],
+            "loss_support": cfg["masking"]["loss_support"],
         },
-        out_dir / "encoder.pt",
+        output_dir / "encoder.pt",
     )
-    print(f"Saved encoder weights to {out_dir / 'encoder.pt'}")
+    print(f"Saved U-Net encoder to {output_dir / 'encoder.pt'}")
 
 
 if __name__ == "__main__":

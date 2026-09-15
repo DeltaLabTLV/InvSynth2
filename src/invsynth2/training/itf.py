@@ -45,7 +45,7 @@ def itf_refine(
     module: a fine-tuned FineTuneModule.
     wav: (B, T_audio) input waveform(s) to invert.
     n_steps: number of optimization steps.
-    lr: SGD step size on θ̂.
+    lr: Adam learning rate for θ̂.
     loss_mode/beta: override the reconstruction loss config (defaults to
                     whatever was used during fine-tuning).
 

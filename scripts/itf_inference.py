@@ -1,102 +1,77 @@
-"""Stage 4: Inference-Time Fine-tuning (ITF).
-
-Loads a fine-tuned checkpoint and runs ITF refinement over the test set,
-saving the refined θ̂ vectors and (optionally) reconstructed spectrograms.
-
-Usage:
-    python scripts/itf_inference.py \
-        --finetuned-ckpt runs/finetune_transformer_fm_imw_seed42/ckpts/best.ckpt \
-        --dataset fm \
-        --steps 100 --lr 1e-2
-"""
+"""Save relaxed and hard-decoded 100-step refinements for one paper run."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import lightning as L
 import numpy as np
 import torch
 
-from invsynth2.data import SynthDataModule
+from invsynth2.repro import load_feature_config, make_data_module, parameter_spec_for_run
+from invsynth2.study import dataset_profile, load_study_config
 from invsynth2.training import FineTuneModule, itf_refine
-from invsynth2.utils.parameters import DEFAULT_SPECS
+from invsynth2.utils.parameters import hard_decode_theta
 
 
-def _spec_for(dataset: str):
-    if dataset in DEFAULT_SPECS:
-        return DEFAULT_SPECS[dataset]
-    if dataset == "talnoise":
-        return DEFAULT_SPECS["tal"]
-    raise ValueError(f"No ParameterSpec for dataset={dataset!r}")
-
-
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--finetuned-ckpt", type=str, required=True)
-    parser.add_argument("--dataset", type=str, required=True)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--steps", type=int, default=100, help="ITF optimization steps per sample.")
-    parser.add_argument("--lr", type=float, default=1e-2)
-    parser.add_argument("--data-root", type=str, default="./data")
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--out-dir", type=str, default=None,
-                        help="Directory to save refined θ̂ tensors. Defaults to ckpt's parent.")
+    parser.add_argument("--study-config", default="configs/icassp2027.yaml")
+    parser.add_argument("--dataset", required=True, choices=["fm", "dx7", "tal"])
+    parser.add_argument("--seed", type=int, required=True, choices=range(5))
+    parser.add_argument("--finetuned-ckpt", required=True)
+    parser.add_argument("--feature-stats", required=True)
+    parser.add_argument("--data-root", default="datasets")
+    parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
+    cfg = load_study_config(args.study_config)
+    profile = dataset_profile(cfg, args.dataset)
+    spec = parameter_spec_for_run(cfg, profile, args.seed, args.data_root)
+    feature_cfg = load_feature_config(cfg, profile, args.seed, args.feature_stats)
     L.seed_everything(args.seed, workers=True)
-
-    # Load the fine-tuned module from checkpoint.
-    print(f"Loading checkpoint from {args.finetuned_ckpt}...")
     module = FineTuneModule.load_from_checkpoint(
-        args.finetuned_ckpt,
-        spec=_spec_for(args.dataset),
-        # stft_cfg will be restored from the saved hyperparameters; if missing,
-        # we let the constructor re-create it from defaults — caller should
-        # pass --stft-* flags here if they used non-default STFT settings.
+        args.finetuned_ckpt, stft_cfg=feature_cfg, spec=spec
     )
+    if module.hparams.encoder_kind != "unet":
+        raise ValueError("The focused ICASSP artifact refines U-Net checkpoints only")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     module.to(device)
-
-    # Build test loader (uses same seed → same split as training).
-    dm = SynthDataModule(
-        root=args.data_root,
-        dataset_name=args.dataset,
-        batch_size=args.batch_size,
-        num_workers=0,
-        seed=args.seed,
-    )
+    dm = make_data_module(cfg, profile, args.seed, args.data_root, num_workers=0)
     dm.setup()
-    loader = dm.test_dataloader()
 
-    # Run ITF over the test set.
-    out_dir = Path(args.out_dir) if args.out_dir else Path(args.finetuned_ckpt).parent / "itf_refined"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    all_initial = []
-    all_refined = []
-    all_stems = []
-    for batch_idx, batch in enumerate(loader):
+    initial, relaxed, decoded, stems = [], [], [], []
+    for batch in dm.test_dataloader():
         wav = batch["wav"].to(device)
         with torch.enable_grad():
-            res = itf_refine(module, wav, n_steps=args.steps, lr=args.lr)
-        all_initial.append(res["theta_hat_initial"].cpu().numpy())
-        all_refined.append(res["theta_hat_refined"].cpu().numpy())
-        all_stems.extend(batch["stem"])
-        if batch_idx % 10 == 0:
-            mean_loss = float(np.mean(res["loss_history"]))
-            print(f"[batch {batch_idx}] mean ITF loss = {mean_loss:.6f}")
+            result = itf_refine(
+                module,
+                wav,
+                n_steps=cfg["optimization"]["refinement_updates"],
+                lr=cfg["optimization"]["refinement_learning_rate"],
+            )
+        initial.append(result["theta_hat_initial"].cpu().numpy())
+        relaxed_tensor = result["theta_hat_refined"]
+        relaxed.append(relaxed_tensor.cpu().numpy())
+        decoded.append(hard_decode_theta(relaxed_tensor, spec).cpu().numpy())
+        stems.extend(str(stem) for stem in batch["stem"])
 
-    initial = np.concatenate(all_initial, axis=0)
-    refined = np.concatenate(all_refined, axis=0)
+    out = Path(args.out) if args.out else Path(args.finetuned_ckpt).parent.parent / "refinement.npz"
+    out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        out_dir / "itf_results.npz",
-        theta_initial=initial,
-        theta_refined=refined,
-        stems=np.array(all_stems),
+        out,
+        stems=np.asarray(stems),
+        theta_initial=np.concatenate(initial),
+        theta_relaxed=np.concatenate(relaxed),
+        theta_hard_decoded=np.concatenate(decoded),
     )
-    print(f"Saved {len(all_stems)} refined θ̂ vectors to {out_dir / 'itf_results.npz'}")
+    print(f"Saved {len(stems)} refinements to {out}")
 
 
 if __name__ == "__main__":

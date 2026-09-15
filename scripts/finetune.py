@@ -1,143 +1,156 @@
-"""Stage 3: Fine-tune for synthesizer inversion.
-
-Usage examples
---------------
-# Full Transformer with IMW loss
-python scripts/finetune.py --config configs/finetune_transformer.yaml \
-    --dataset fm \
-    --encoder-ckpt runs/pretrain_transformer_fm_seed42/encoder.pt \
-    --proxy-ckpt   runs/proxy_fm_seed42/proxy.pt
-
-# Ablation: w/o IMW (= spec_only)
-python scripts/finetune.py --config configs/finetune_transformer.yaml \
-    --dataset fm \
-    --encoder-ckpt ... --proxy-ckpt ... \
-    --loss spec_only
-
-# Ablation: w/o SSL (random encoder init; do not load --encoder-ckpt)
-python scripts/finetune.py --config configs/finetune_transformer.yaml \
-    --dataset fm \
-    --proxy-ckpt ... \
-    --skip-pretrain
-"""
+"""Run one paper-defined supervised U-Net configuration."""
 
 from __future__ import annotations
 
-# --- Make sibling 'scripts' modules importable when launched as a script ---
-import sys
-from pathlib import Path
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-# --------------------------------------------------------------------------
-
 import argparse
+import json
 from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import lightning as L
 import torch
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+from lightning.pytorch.callbacks import ModelCheckpoint
 
-from invsynth2.data import SynthDataModule
+from invsynth2.repro import load_feature_config, make_data_module, parameter_spec_for_run
+from invsynth2.study import (
+    PAPER_CONFIGURATIONS,
+    dataset_profile,
+    load_study_config,
+    run_output_dir,
+)
 from invsynth2.training import FineTuneModule
-from invsynth2.utils.parameters import DEFAULT_SPECS, ParameterSpec
-from invsynth2.utils.stft import STFTConfig
-from scripts.common import load_config, make_tb_logger
+from scripts.common import make_tb_logger
 
 
-def _spec_for(dataset: str) -> ParameterSpec:
-    if dataset in DEFAULT_SPECS:
-        return DEFAULT_SPECS[dataset]
-    if dataset == "talnoise":
-        return DEFAULT_SPECS["tal"]
-    raise ValueError(f"No ParameterSpec for dataset={dataset!r}")
-
-
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--dataset", type=str, required=True)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--run-dir", type=str, default="runs")
-    parser.add_argument("--encoder-ckpt", type=str, default=None,
-                        help="Path to Stage-1 encoder.pt (omit with --skip-pretrain).")
-    parser.add_argument("--proxy-ckpt", type=str, required=True,
-                        help="Path to Stage-2 proxy.pt.")
-    parser.add_argument("--loss", type=str, default=None, choices=["imw", "log_spec", "spec_only"],
-                        help="Override the loss mode in the config (for ablation runs).")
-    parser.add_argument("--skip-pretrain", action="store_true",
-                        help="Train encoder from random init (the 'w/o SSL' ablation row).")
-    parser.add_argument("--max-epochs", type=int, default=None)
+    parser.add_argument("--study-config", default="configs/icassp2027.yaml")
+    parser.add_argument("--dataset", required=True, choices=["fm", "dx7", "tal"])
+    parser.add_argument("--seed", type=int, required=True, choices=range(5))
+    parser.add_argument("--configuration", required=True, choices=PAPER_CONFIGURATIONS)
+    parser.add_argument("--data-root", default="datasets")
+    parser.add_argument("--run-dir", default="runs")
+    parser.add_argument("--feature-stats", required=True)
+    parser.add_argument("--proxy-ckpt", required=True)
+    parser.add_argument("--encoder-ckpt", default=None)
+    parser.add_argument("--max-steps", type=int, default=None)
     args = parser.parse_args()
 
+    cfg = load_study_config(args.study_config)
+    profile = dataset_profile(cfg, args.dataset)
+    row = cfg["configurations"][args.configuration]
     L.seed_everything(args.seed, workers=True)
-    cfg = load_config(args.config)
-    if args.loss is not None:
-        cfg["module"]["loss_mode"] = args.loss
 
-    # ---- Data ----
-    dm = SynthDataModule(
-        root=cfg["dataset"]["root"],
-        dataset_name=args.dataset,
-        batch_size=cfg["dataset"]["batch_size"],
-        num_workers=cfg["dataset"]["num_workers"],
-        target_seconds=cfg["dataset"]["target_seconds"],
-        sample_rate=cfg["dataset"]["sample_rate"],
-        train_frac=cfg["dataset"]["train_frac"],
-        val_frac=cfg["dataset"]["val_frac"],
-        seed=args.seed,
-    )
+    dm = make_data_module(cfg, profile, args.seed, args.data_root)
     dm.setup()
-
-    # ---- Recover frozen STFT config from the proxy checkpoint ----
-    proxy_ckpt = torch.load(args.proxy_ckpt, map_location="cpu")
-    stft_cfg = STFTConfig(**proxy_ckpt["stft_config"])
-
-    spec = _spec_for(args.dataset)
-
-    module = FineTuneModule(stft_cfg=stft_cfg, spec=spec, **cfg["module"])
-    module.load_proxy_weights(proxy_ckpt["proxy_state_dict"])
-
-    if not args.skip_pretrain:
-        if args.encoder_ckpt is None:
-            raise ValueError("Provide --encoder-ckpt or pass --skip-pretrain.")
-        enc_ckpt = torch.load(args.encoder_ckpt, map_location="cpu")
-        # Prefer the saved encoder-only state dict from pretrain.py:
-        sd = enc_ckpt.get("encoder_state_dict", enc_ckpt)
-        module.load_encoder_weights(sd, strict=False)
-    else:
-        print("=== Running in 'w/o SSL' ablation mode: encoder is randomly initialized ===")
-
-    run_name = (
-        f"finetune_{cfg['module']['encoder_kind']}"
-        f"_{args.dataset}"
-        f"_{cfg['module']['loss_mode']}"
-        f"{'_noSSL' if args.skip_pretrain else ''}"
-        f"_seed{args.seed}"
+    spec = parameter_spec_for_run(cfg, profile, args.seed, args.data_root)
+    feature_cfg = load_feature_config(
+        cfg, profile, args.seed, args.feature_stats
     )
-    logger = make_tb_logger(args.run_dir, run_name)
-    callbacks = [
-        ModelCheckpoint(
-            dirpath=str(Path(args.run_dir) / run_name / "ckpts"),
-            **cfg["callbacks"]["ckpt"],
-        ),
-        EarlyStopping(**cfg["callbacks"]["early_stop"]),
-        LearningRateMonitor(),
-    ]
+
+    proxy_checkpoint = torch.load(args.proxy_ckpt, map_location="cpu")
+    if proxy_checkpoint.get("dataset") != profile.name or proxy_checkpoint.get("seed") != args.seed:
+        raise ValueError("Proxy checkpoint does not belong to this dataset/seed realization")
+    if (
+        proxy_checkpoint.get("training_scope") != "encoder_train_split"
+        or proxy_checkpoint.get("validation_scope") != "encoder_validation_split"
+        or proxy_checkpoint.get("test_excluded_from_fitting") is not True
+    ):
+        raise ValueError(
+            "Paper runs require a train-fitted, validation-monitored proxy "
+            "whose weights never see encoder-test examples"
+        )
+
+    loss_cfg = cfg["loss"]
+    opt_cfg = cfg["optimization"]
+    module = FineTuneModule(
+        stft_cfg=feature_cfg,
+        spec=spec,
+        encoder_kind="unet",
+        loss_mode=row["reconstruction"],
+        beta=loss_cfg["beta"],
+        alpha1=loss_cfg["alpha_l1"],
+        alpha2=loss_cfg["alpha_l2"],
+        epsilon=loss_cfg["epsilon"],
+        lambda_param=loss_cfg["lambda_parameter"],
+        lambda_rec=loss_cfg["lambda_reconstruction"],
+        lambda_reg=loss_cfg["lambda_regression"],
+        lambda_cls=loss_cfg["lambda_classification"],
+        learning_rate_unet=opt_cfg["unet_learning_rate"],
+        weight_decay=opt_cfg["weight_decay"],
+        max_grad_norm=opt_cfg["gradient_clip_norm"],
+    )
+    module.load_proxy_weights(proxy_checkpoint["proxy_state_dict"])
+
+    if row["pretraining"]:
+        if not args.encoder_ckpt:
+            raise ValueError(f"{args.configuration} requires --encoder-ckpt")
+        encoder_checkpoint = torch.load(args.encoder_ckpt, map_location="cpu")
+        if (
+            encoder_checkpoint.get("dataset") != profile.name
+            or encoder_checkpoint.get("seed") != args.seed
+        ):
+            raise ValueError("Encoder checkpoint does not belong to this dataset/seed realization")
+        if encoder_checkpoint.get("encoder_updates") != opt_cfg["masked_pretraining_updates"]:
+            raise ValueError("Encoder checkpoint does not contain exactly 50,000 pretraining updates")
+        module.load_encoder_weights(encoder_checkpoint["encoder_state_dict"], strict=True)
+    elif args.encoder_ckpt:
+        raise ValueError("supervised_imw must start from random weights; omit --encoder-ckpt")
+
+    output_dir = run_output_dir(args.run_dir, args.dataset, args.seed) / args.configuration
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = ModelCheckpoint(
+        dirpath=str(output_dir / "ckpts"),
+        monitor="val/rec_spec",
+        mode="min",
+        save_top_k=1,
+        save_last=True,
+    )
+    expected_steps = int(row["supervised_updates"])
+    max_steps = args.max_steps or expected_steps
     trainer = L.Trainer(
-        max_epochs=args.max_epochs or cfg["trainer"]["max_epochs"],
-        accelerator=cfg["trainer"]["accelerator"],
-        devices=cfg["trainer"]["devices"],
-        precision=cfg["trainer"]["precision"],
-        log_every_n_steps=cfg["trainer"]["log_every_n_steps"],
-        gradient_clip_val=cfg["trainer"]["gradient_clip_val"],
-        deterministic=cfg["trainer"].get("deterministic", False),
-        callbacks=callbacks,
-        logger=logger,
-        default_root_dir=str(Path(args.run_dir) / run_name),
+        max_epochs=-1,
+        max_steps=max_steps,
+        accelerator="auto",
+        devices=1,
+        precision=opt_cfg["precision"],
+        gradient_clip_val=opt_cfg["gradient_clip_norm"],
+        deterministic=opt_cfg["deterministic"],
+        callbacks=[checkpoint],
+        logger=make_tb_logger(output_dir, "logs"),
+        default_root_dir=str(output_dir),
     )
     trainer.fit(module, datamodule=dm)
-    print(f"Best checkpoint: {trainer.checkpoint_callback.best_model_path}")
+    if trainer.global_step != max_steps:
+        raise RuntimeError(f"Expected {max_steps} supervised updates, got {trainer.global_step}")
+
+    metadata = {
+        "schema_version": 1,
+        "dataset": profile.name,
+        "seed": args.seed,
+        "configuration": args.configuration,
+        "display_name": row["display_name"],
+        "pretrained": bool(row["pretraining"]),
+        "masked_pretraining_updates": (
+            opt_cfg["masked_pretraining_updates"] if row["pretraining"] else 0
+        ),
+        "supervised_updates": trainer.global_step,
+        "reconstruction": row["reconstruction"],
+        "best_checkpoint": checkpoint.best_model_path,
+        "proxy_training_scope": proxy_checkpoint["training_scope"],
+        "proxy_validation_scope": proxy_checkpoint["validation_scope"],
+        "proxy_test_excluded_from_fitting": proxy_checkpoint[
+            "test_excluded_from_fitting"
+        ],
+    }
+    with (output_dir / "run_metadata.json").open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    print(f"Best checkpoint: {checkpoint.best_model_path}")
 
 
 if __name__ == "__main__":

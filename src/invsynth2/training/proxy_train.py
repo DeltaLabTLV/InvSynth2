@@ -51,7 +51,8 @@ class ProxyTrainModule(L.LightningModule):
         log_mag_norm = self.stft(wav)["log_mag_norm"]       # (B, F, T)
 
         pred_log_mag_norm = self.proxy(theta)               # (B, F, T)
-        loss = F.mse_loss(pred_log_mag_norm, log_mag_norm)
+        with torch.autocast(device_type=pred_log_mag_norm.device.type, enabled=False):
+            loss = F.mse_loss(pred_log_mag_norm.float(), log_mag_norm.float())
         self.log(f"{stage}/proxy_mse", loss, prog_bar=(stage == "train"), on_step=(stage == "train"), on_epoch=True, sync_dist=True)
         return loss
 
@@ -62,7 +63,7 @@ class ProxyTrainModule(L.LightningModule):
         return self._shared_step(batch, "val")
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(
+        return torch.optim.Adam(
             self.parameters(),
             lr=self.hparams.learning_rate,
             weight_decay=self.hparams.weight_decay,

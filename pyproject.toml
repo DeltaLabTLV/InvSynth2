@@ -4,12 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "invsynth2"
-version = "1.0.0"
-description = "Drivers of Success in Synthesizer Inversion (ISMIR 2026)"
+version = "2.0.0"
+description = "Masked reconstruction pretraining for proxy-based synthesizer inversion"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Anonymous" }]
+authors = [
+  { name = "Moshe Laufer" },
+  { name = "Oren Barkan" },
+  { name = "Noam Koenigstein" },
+]
+dependencies = [
+  "numpy==1.26.4",
+  "pandas==2.2.2",
+  "PyYAML==6.0.1",
+  "soundfile==0.12.1",
+  "torch==2.3.1",
+  "lightning==2.3.3",
+  "pytorch-lightning==2.3.3",
+  "setuptools==70.2.0",
+  "tensorboard==2.16.2",
+  "torchmetrics==1.4.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.2.2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

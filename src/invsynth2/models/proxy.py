@@ -1,12 +1,12 @@
-"""IS2-style differentiable synthesizer proxy.
+"""Run-specific differentiable synthesizer proxy.
 
 Maps θ → log-magnitude spectrogram. We follow the IS2 design: a small
 convolutional generator that takes (B, n_total) parameters and produces
 (B, F, T) spectrograms.
 
-This proxy is trained in Stage 2 (`train_proxy.py`) once per dataset and then
-frozen. During encoder fine-tuning, gradients flow through P to update the
-encoder + PEN, but P's own weights are not updated.
+One fresh proxy is trained for every generated dataset/seed realization and
+then frozen. It is shared only across the four paired configurations of that
+run; no original IS2 checkpoint is loaded.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 
 
-class IS2Proxy(nn.Module):
+class SynthProxy(nn.Module):
     """Lightweight conv generator that synthesizes (B, F, T) log-mag spectrograms
     from a parameter vector (B, n_total).
 
@@ -67,3 +67,7 @@ class IS2Proxy(nn.Module):
         if x.shape[-2:] != (self.out_freq, self.out_time):
             x = nn.functional.interpolate(x, size=(self.out_freq, self.out_time), mode="bilinear", align_corners=False)
         return x.squeeze(1)  # (B, F, T)
+
+
+# Backward-compatible symbol for checkpoints/scripts from the ISMIR workspace.
+IS2Proxy = SynthProxy

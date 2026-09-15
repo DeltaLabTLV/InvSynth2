@@ -1,14 +1,8 @@
-"""Evaluation metrics matching the paper's Table 1, 2, and 4.
+"""Evaluation metrics.
 
-All metrics expect linear-magnitude STFT spectrograms unless otherwise noted.
-
-Implemented:
-- Spec   : ||X̂ - X||_1 + ||X̂ - X||_2^2  (paper Eq. 5; reported as ×100)
-- SC     : Spectral Convergence = ||X̂ - X||_F / ||X||_F
-- Melspec: MSE between mel spectrograms (×100)
-- MFCC   : MSE between MFCCs (×100)
-- ACC    : per-parameter accuracy (continuous within-tolerance + categorical argmax)
-- Band-decomposed MSE (Low/Mid/High) — used in Table 2.
+The focused ICASSP path uses only per-example Spec and SC in each dataset's
+native nonnegative magnitude coordinates. Mel/MFCC/band helpers below are
+retained for historical ISMIR analyses and are not invoked by the paper runner.
 """
 
 from __future__ import annotations
@@ -22,24 +16,43 @@ import torch.nn.functional as F
 # ----------------------------------------------------------------------------
 # Spec, SC
 # ----------------------------------------------------------------------------
-def spec_metric(pred_lin: torch.Tensor, target_lin: torch.Tensor) -> torch.Tensor:
-    """Eq. (5) without α scaling — reported as ×100 in tables."""
-    l1 = (pred_lin - target_lin).abs().mean()
-    l2 = ((pred_lin - target_lin) ** 2).mean()
-    return l1 + l2
+def spec_per_example(pred_lin: torch.Tensor, target_lin: torch.Tensor) -> torch.Tensor:
+    """Per-example ``mean(|D|) + mean(D^2)`` in FP32."""
 
-
-def spectral_convergence(pred_lin: torch.Tensor, target_lin: torch.Tensor) -> torch.Tensor:
-    """SC = ||X̂ - X||_F / ||X||_F. Computed per-sample then averaged."""
-    # Frobenius norm per (B, F, T) sample.
     if pred_lin.dim() == 2:
         pred_lin = pred_lin.unsqueeze(0)
         target_lin = target_lin.unsqueeze(0)
-    diff = (pred_lin - target_lin).reshape(pred_lin.shape[0], -1)
-    targ = target_lin.reshape(target_lin.shape[0], -1)
-    num = torch.norm(diff, dim=-1)
-    denom = torch.norm(targ, dim=-1).clamp(min=1e-8)
-    return (num / denom).mean()
+    with torch.autocast(device_type=pred_lin.device.type, enabled=False):
+        residual = (pred_lin.float() - target_lin.float()).flatten(start_dim=1)
+        return residual.abs().mean(dim=1) + residual.square().mean(dim=1)
+
+
+def spec_metric(pred_lin: torch.Tensor, target_lin: torch.Tensor) -> torch.Tensor:
+    """Mean of per-example Spec values; manuscript tables report ``100 *`` this."""
+
+    return spec_per_example(pred_lin, target_lin).mean()
+
+
+def spectral_convergence_per_example(
+    pred_lin: torch.Tensor, target_lin: torch.Tensor
+) -> torch.Tensor:
+    """Per-example ``||D||_F / max(||M||_F, 1e-8)`` in FP32."""
+
+    if pred_lin.dim() == 2:
+        pred_lin = pred_lin.unsqueeze(0)
+        target_lin = target_lin.unsqueeze(0)
+    with torch.autocast(device_type=pred_lin.device.type, enabled=False):
+        diff = (pred_lin.float() - target_lin.float()).flatten(start_dim=1)
+        targ = target_lin.float().flatten(start_dim=1)
+        numerator = torch.linalg.vector_norm(diff, dim=-1)
+        denominator = torch.linalg.vector_norm(targ, dim=-1).clamp_min(1e-8)
+        return numerator / denominator
+
+
+def spectral_convergence(pred_lin: torch.Tensor, target_lin: torch.Tensor) -> torch.Tensor:
+    """Mean spectral convergence across examples."""
+
+    return spectral_convergence_per_example(pred_lin, target_lin).mean()
 
 
 # ----------------------------------------------------------------------------

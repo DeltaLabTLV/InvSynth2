@@ -1,33 +1,8 @@
-"""Masking strategies for SSL pre-training.
-
-- Transformer: BERT-style independent per-frame masking. 45% of time frames
-  replaced with a learnable mask embedding. Span length M=1.
-
-- U-Net: MAE-style rectangular pixel masking. 6.5% of pixels chosen as mask
-  centers, 3x3 mask placed around each, ~45% total coverage after overlap.
-"""
+"""Rectangular masking for the paper's U-Net reconstruction pretraining."""
 
 from __future__ import annotations
 
 import torch
-
-
-def make_frame_mask(
-    n_frames: int,
-    mask_ratio: float = 0.45,
-    batch: int | None = None,
-    device: str | torch.device = "cpu",
-    generator: torch.Generator | None = None,
-) -> torch.Tensor:
-    """Bernoulli per-frame mask used by the Transformer.
-
-    Returns
-    -------
-    mask: (B, n_frames) or (n_frames,) bool, True = MASKED.
-    """
-    if batch is None:
-        return torch.rand(n_frames, device=device, generator=generator) < mask_ratio
-    return torch.rand(batch, n_frames, device=device, generator=generator) < mask_ratio
 
 
 def make_unet_mask(

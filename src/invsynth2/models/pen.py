@@ -4,9 +4,7 @@ Maps encoder features → predicted synthesizer parameters θ̂ with separate ou
 branches for continuous (regression) and categorical (classification) parameter
 groups, following the IS2 head structure.
 
-The PEN is encoder-agnostic: it accepts pooled features of shape (B, D_in).
-Pooling strategy is delegated to the caller (mean over time for Transformer,
-global avg pool over (F, T) for U-Net).
+The PEN accepts globally pooled U-Net bottleneck features of shape (B, D_in).
 """
 
 from __future__ import annotations
@@ -54,11 +52,6 @@ class PEN(nn.Module):
         for head in self.cat_heads:
             out["cat_logits"].append(head(h))
         return out
-
-
-def pool_transformer_features(tokens: torch.Tensor) -> torch.Tensor:
-    """Mean-pool Transformer (B, T, D) features into (B, D)."""
-    return tokens.mean(dim=1)
 
 
 def pool_unet_features(feats: torch.Tensor) -> torch.Tensor:
